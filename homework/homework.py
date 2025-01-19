@@ -96,3 +96,175 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+import json
+import gzip
+import pickle
+
+import pandas as pd
+
+from sklearn.compose import ColumnTransformer
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import (
+    precision_score,
+    balanced_accuracy_score,
+    recall_score,
+    f1_score,
+    confusion_matrix,
+)
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+
+def main() -> None:
+    test_data = pd.read_csv("files/input/test_data.csv.zip")
+    train_data = pd.read_csv("files/input/train_data.csv.zip")
+
+    # Paso 1
+    test_data = test_data.rename(columns={"default payment next month": "default"})
+    train_data = train_data.rename(columns={"default payment next month": "default"})
+
+    test_data = test_data.drop(columns="ID")
+    train_data = train_data.drop(columns="ID")
+
+    test_data = test_data[test_data["MARRIAGE"] != 0]
+    train_data = train_data[train_data["MARRIAGE"] != 0]
+
+    test_data = test_data[test_data["EDUCATION"] != 0]
+    train_data = train_data[train_data["EDUCATION"] != 0]
+
+    train_data.loc[train_data["EDUCATION"] > 4, "EDUCATION"] = 4
+    test_data.loc[test_data["EDUCATION"] > 4, "EDUCATION"] = 4
+
+    # Paso 2
+    x_train = train_data.drop(columns="default")
+    y_train = train_data["default"]
+    x_test = test_data.drop(columns="default")
+    y_test = test_data["default"]
+
+    # Paso 3
+
+    categorical_variables = ["SEX", "EDUCATION", "MARRIAGE"]
+    preprocessor = ColumnTransformer(
+        transformers=[("cat", OneHotEncoder(), categorical_variables)],
+        remainder="passthrough",
+    )
+
+    scaled_variables = x_train.columns.difference(categorical_variables)
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat", OneHotEncoder(), categorical_variables),
+            ("scaler", StandardScaler(), scaled_variables),
+        ]
+    )
+    pipeline = Pipeline(
+        [
+            ("preprocessor", preprocessor),
+            ("feature_selection", SelectKBest()),
+            ("pca", PCA()),
+            ("classifier", MLPClassifier()),
+        ]
+    )
+
+    # Paso 4. Definir la búsqueda de hiperparámetros para la optimización
+    parameter_grid = {
+        "pca__n_components": [None],
+        "feature_selection__k": [20],
+        "classifier__hidden_layer_sizes": [(50, 30, 40, 60), (50, 30, 30, 60)],
+        "classifier__alpha": [0.13, 0.26],
+        "classifier__random_state": [9, 21],
+        "classifier__max_iter": [15000, 20000],
+    }
+
+    grid_search = GridSearchCV(
+        pipeline,
+        parameter_grid,
+        cv=10,
+        scoring="balanced_accuracy",
+        n_jobs=-1,
+        refit=True,
+        verbose=2,
+    )
+    grid_search.fit(x_train, y_train)
+    y_train_prediction = grid_search.predict(x_train)
+    y_test_prediction = grid_search.predict(x_test)
+    print(grid_search.best_params_)
+
+    # Paso 5
+
+    with gzip.open("files/models/model.pkl.gz", "wb") as f:
+        pickle.dump(grid_search, f)
+
+    # Paso 6
+
+    metrics_train = {
+        "type": "metrics",
+        "dataset": "train",
+        "precision": precision_score(y_train, y_train_prediction),
+        "balanced_accuracy": balanced_accuracy_score(y_train, y_train_prediction),
+        "recall": recall_score(y_train, y_train_prediction),
+        "f1_score": f1_score(y_train, y_train_prediction),
+    }
+
+    metrics_test = {
+        "type": "metrics",
+        "dataset": "test",
+        "precision": precision_score(y_test, y_test_prediction),
+        "balanced_accuracy": balanced_accuracy_score(y_test, y_test_prediction),
+        "recall": recall_score(y_test, y_test_prediction),
+        "f1_score": f1_score(y_test, y_test_prediction),
+    }
+
+    metrics = [metrics_train, metrics_test]
+
+    with open("files/output/metrics.json", "w") as f:
+        for metric in metrics:
+            f.write(f"{json.dumps(metric)}\n")
+
+    # Paso 7
+
+    confusion_matrix_train = confusion_matrix(y_train, y_train_prediction).tolist()
+
+    confusion_matrix_test = confusion_matrix(y_test, y_test_prediction).tolist()
+
+    confusion_matrix_train_result = {
+        "type": "cm_matrix",
+        "dataset": "train",
+        "true_0": {
+            "predicted_1": int(confusion_matrix_train[0][1]),
+            "predicted_0": int(confusion_matrix_train[0][0]),
+        },
+        "true_1": {
+            "predicted_0": int(confusion_matrix_train[1][0]),
+            "predicted_1": int(confusion_matrix_train[1][1]),
+        },
+    }
+
+    confusion_matrix_test_result = {
+        "type": "cm_matrix",
+        "dataset": "test",
+        "true_0": {
+            "predicted_0": int(confusion_matrix_test[0][0]),
+            "predicted_1": int(confusion_matrix_test[0][1]),
+        },
+        "true_1": {
+            "predicted_0": int(confusion_matrix_test[1][0]),
+            "predicted_1": int(confusion_matrix_test[1][1]),
+        },
+    }
+
+    confusion_matrix_results = [
+        confusion_matrix_train_result,
+        confusion_matrix_test_result,
+    ]
+
+    with open("files/output/metrics.json", "a") as f:
+        for cm in confusion_matrix_results:
+            f.write(f"{json.dumps(cm)}\n")
+
+
+if __name__ == "__main__":
+    main()
